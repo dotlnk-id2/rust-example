@@ -1,0 +1,29 @@
+[package]
+name = "example"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "rtcp"
+path = "src/main.rs"
+
+[dependencies]
+features = "0.10"
+tokio = { version = "1", features = [
+    "net",
+    "rt-multi-thread",
+    "macros",
+    "io-util",
+] }
+
+# clap = "4.5" # terminal cmd param
+
+# config = "0.15"
+# serde = "1.0.213"
+# serde_json = "1.0.137"
+
+# tracing = { version = "0.1.35", features = ["std"] }
+# tracing-core = "0.1.28"
+# tracing-subscriber = { version = "0.3.0", features = ["registry", "std"] }
+# tracing-appender = "0.2"
+# tracing-log = { version = "0.2.0", default-features = false, optional = true }
