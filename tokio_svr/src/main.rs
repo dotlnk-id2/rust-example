@@ -86,6 +86,7 @@ impl Decoder for TcpProtocolCodec {
 pub struct HttpRequest {
     pub method: String,
     pub path: String,
+    pub content_type: Option<String>,
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
 }
@@ -130,10 +131,16 @@ impl Decoder for HttpDecoder {
                 let path = req.path.unwrap_or("").to_string();
 
                 let mut parsed_headers = Vec::new();
+                let mut cont_typ = Option::None;
                 for h in req.headers.iter() {
-                    let name = h.name.to_string();
-                    let value = String::from_utf8_lossy(h.value).into_owned();
-                    parsed_headers.push((name, value));
+                    let _name = h.name.to_string();
+                    let _value = String::from_utf8_lossy(h.value).into_owned();
+                    
+                    if _name.eq_ignore_ascii_case("Content-Type") {
+                        cont_typ = Option::Some(_value);
+                    }else{
+                        parsed_headers.push((_name, _value));
+                    }
                 }
 
                 // 5. 操縱緩衝區游標
@@ -141,10 +148,11 @@ impl Decoder for HttpDecoder {
                 let body = src.split_to(content_length).to_vec(); // 切割出 Body 字節
 
                 let http_request = HttpRequest {
-                    method,
-                    path,
+                    method:method,
+                    path:path,
+                    content_type:cont_typ,
                     headers: parsed_headers,
-                    body,
+                    body:body,
                 };
 
                 // 6. 「黏包」處理：如果客戶端開啟 Keep-Alive 連續發送多個 HTTP 請求，
