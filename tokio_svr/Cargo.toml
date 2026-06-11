@@ -16,6 +16,10 @@ tokio = { version = "1", features = [
     "io-util",
     "sync",
 ] }
+tokio-util = { version = "0.7", features = ["codec"] }
+bytes = "1"
+futures = "0.3" # 為了使用 StreamExt 的 next() 方法
+httparse = "1.8" # 專為異步流設計的高性能 HTTP 解析器
 
 # clap = "4.5" # terminal cmd param
 
