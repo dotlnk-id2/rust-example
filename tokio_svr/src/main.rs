@@ -8,6 +8,8 @@ use tokio_util::codec::{Decoder, Encoder};
 
 // 必須引入此 Trait，編譯器才能在 FramedRead 上找到 .next() 方法
 use futures::StreamExt;
+use tokio_util::codec::Framed; // 👈 由 FramedRead 改為雙向的 Framed
+use futures::SinkExt; // 👈 必須引入 SinkExt 才能使用 .send()
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -239,7 +241,7 @@ async fn run_tcp_server(addr: SocketAddr, pt: ProtocolType) -> Result<(), std::i
             match pt {
                 ProtocolType::HTTP => {
                     // 使用 Framed::new 建立雙向通道
-                    let mut framed = tokio_util::codec::FramedRead::new(socket, HttpCodec);
+                    let mut framed = Framed::new(socket, HttpCodec);
 
                     while let Some(result) = framed.next().await {
                         match result {
@@ -271,7 +273,7 @@ async fn run_tcp_server(addr: SocketAddr, pt: ProtocolType) -> Result<(), std::i
                     }
                 }
                 ProtocolType::TCP => {
-                    let mut framed = tokio_util::codec::FramedRead::new(socket, TcpCodec);
+                    let mut framed = Framed::new(socket, TcpCodec);
 
                     while let Some(result) = framed.next().await {
                         match result {
