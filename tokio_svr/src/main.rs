@@ -2,6 +2,8 @@ use std::net::SocketAddr;
 use tokio::net::{TcpListener, UdpSocket};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+use tokio::sync::mpsc;
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 定義監聽地址
@@ -81,24 +83,59 @@ async fn run_tcp_server(addr: SocketAddr,pt: ProtocolType) -> Result<(), tokio::
     }
 }
 
-/// UDP 伺服器核心邏輯
 async fn run_udp_server(addr: SocketAddr) -> Result<(), tokio::io::Error> {
-    let socket = UdpSocket::bind(addr).await?;
+    // 1. 綁定 UDP 端口，並用 Arc 封裝以利在多個 Task 間共享
+    let socket = std::sync::Arc::new(UdpSocket::bind(addr).await?);
     println!("UDP server listening on {}", addr);
 
-    let mut buf = [0u8; 2048]; // UDP 數據包上限通常建議設較大
+    // 2. 創建一個異步通道 (Channel)，容量設為 1024 提供背壓保護
+    let (tx, mut rx) = mpsc::channel::<(Vec<u8>, SocketAddr)>(1024);
 
-    loop {
-        // 異步接收 UDP 數據包
-        let (len, peer) = socket.recv_from(&mut buf).await?;
-        let data = &buf[..len];
-
-        println!("UDP received from {}: {:?} | String: {:?}", peer, data, String::from_utf8_lossy(data));
-
-        // 根據接收到的對端地址，將數據回傳
-        let len_sent = socket.send_to(data, peer).await?;
-        if len_sent != len {
-            eprintln!("Warning: UDP sent byte count mismatch (sent {}/{} bytes)", len_sent, len);
+    // 3. 克隆 Arc 指針給生產者 Task
+    let socket_rx = std::sync::Arc::clone(&socket);
+    
+    // 【生產者 Task】：負責以極快速度從網卡接收數據，並塞入隊列
+    tokio::spawn(async move {
+        let mut buf = [0u8; 2048];
+        loop {
+            // 因為 Arc<UdpSocket> 實現了異步讀寫，直接呼叫 recv_from 即可
+            match socket_rx.recv_from(&mut buf).await {
+                Ok((len, peer)) => {
+                    // 將字節切片拷貝進獨立的 Vec，確保內存絕對隔離，並發送至通道
+                    if let Err(_) = tx.send((buf[..len].to_vec(), peer)).await {
+                        eprintln!("Receiver channel closed");
+                        break;
+                    }
+                }
+                Err(e) => {
+                    eprintln!("UDP recv error: {}", e);
+                }
+            }
         }
+    });
+
+    // 4. 【消費者主循環】：從隊列拿數據，處理耗時業務並回傳
+    // 讓此循環常駐在當前線程，防止 run_udp_server 函數結束而導致進程退出
+    while let Some((data, peer)) = rx.recv().await {
+        // 每次回包都克隆一次 Arc 指針，並衍生新的 Task 處理，實現完全併發回包
+        let socket_tx = std::sync::Arc::clone(&socket);
+        
+        tokio::spawn(async move {
+            // 執行耗時業務
+            let processed_data = complex_business_logic(data).await;
+            
+            // 將結果回傳給特定對端
+            if let Err(e) = socket_tx.send_to(&processed_data, peer).await {
+                eprintln!("UDP send error to {}: {}", peer, e);
+            }
+        });
     }
+
+    Ok(())
+}
+
+// 模擬您的業務邏輯函數
+async fn complex_business_logic(data: Vec<u8>) -> Vec<u8> {
+    // 實際業務處理...
+    data
 }
