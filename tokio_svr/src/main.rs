@@ -266,7 +266,7 @@ async fn run_udp_server(addr: SocketAddr) -> Result<(), tokio::io::Error> {
 
         tokio::spawn(async move {
             // 執行耗時業務
-            let processed_data = complex_business_logic(data).await;
+            let processed_data = process_udp_packet(data).await;
 
             // 將結果回傳給特定對端
             if let Err(e) = socket_tx.send_to(&processed_data, peer).await {
@@ -281,7 +281,7 @@ async fn run_udp_server(addr: SocketAddr) -> Result<(), tokio::io::Error> {
 
 
 // 模擬您的業務邏輯函數
-async fn complex_business_logic(data: Vec<u8>) -> Vec<u8> {
+async fn process_udp_packet(data: Vec<u8>) -> Vec<u8> {
     // 實際業務處理...
     data
 }
