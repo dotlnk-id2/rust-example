@@ -7,9 +7,9 @@ use tokio::sync::mpsc;
 use tokio_util::codec::{Decoder, Encoder};
 
 // 必須引入此 Trait，編譯器才能在 FramedRead 上找到 .next() 方法
+use futures::SinkExt;
 use futures::StreamExt;
-use tokio_util::codec::Framed; // 👈 由 FramedRead 改為雙向的 Framed
-use futures::SinkExt; // 👈 必須引入 SinkExt 才能使用 .send()
+use tokio_util::codec::Framed; // 👈 由 FramedRead 改為雙向的 Framed // 👈 必須引入 SinkExt 才能使用 .send()
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -100,7 +100,8 @@ impl Encoder<Vec<u8>> for TcpCodec {
 #[derive(Debug)]
 pub struct HttpRequest {
     pub method: String,
-    pub path: String,
+    pub path: String, // 👈 改造後此處僅保留純路徑 (例如: "/search")
+    pub query_params: Vec<(String, String)>, // 👈 新增：用於儲存 URL 參數
     pub content_type: Option<String>,
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
@@ -151,19 +152,44 @@ impl Decoder for HttpCodec {
                     return Ok(None);
                 }
 
-                // 4. 數據充足，提取關鍵數據並轉換所有權（打破對 src 的借用）
+                // 🚀 解析 URL 與 Query Parameters
                 let method = req.method.unwrap_or("").to_string();
-                let path = req.path.unwrap_or("").to_string();
+                let full_path = req.path.unwrap_or("");
+                let mut path = full_path.to_string();
+                let mut query_params = Vec::new();
 
+                // 檢查是否帶有 '?' 記號
+                if let Some(pos) = full_path.find('?') {
+                    // 切割出純路徑
+                    path = full_path[..pos].to_string();
+
+                    // 獲取 '?' 後面的查詢字串 (例如: "id=100&type=system")
+                    let query_str = &full_path[pos + 1..];
+
+                    // 依據 '&' 切分多個參數對
+                    for pair in query_str.split('&') {
+                        if !pair.is_empty() {
+                            // 依據 '=' 切分鍵與值，限制切分為 2 部分
+                            let mut parts = pair.splitn(2, '=');
+                            let key = parts.next().unwrap_or("").to_string();
+                            let val = parts.next().unwrap_or("").to_string();
+
+                            // 🌟 此處的百分號編碼（Percent-Encoding）隱患已先做標記（見文末高亮提醒）
+                            query_params.push((key, val));
+                        }
+                    }
+                }
+
+                // 4. 數據充足，提取關鍵數據並轉換所有權（打破對 src 的借用）
                 let mut parsed_headers = Vec::new();
                 let mut cont_typ = Option::None;
                 for h in req.headers.iter() {
                     let _name = h.name.to_string();
                     let _value = String::from_utf8_lossy(h.value).into_owned();
-                    
+
                     if _name.eq_ignore_ascii_case("Content-Type") {
                         cont_typ = Option::Some(_value);
-                    }else{
+                    } else {
                         parsed_headers.push((_name, _value));
                     }
                 }
@@ -173,11 +199,12 @@ impl Decoder for HttpCodec {
                 let body = src.split_to(content_length).to_vec(); // 切割出 Body 字節
 
                 let http_request = HttpRequest {
-                    method:method,
-                    path:path,
-                    content_type:cont_typ,
+                    method: method,
+                    path: path,
+                    query_params:query_params,
+                    content_type: cont_typ,
                     headers: parsed_headers,
-                    body:body,
+                    body: body,
                 };
 
                 // 6. 「黏包」處理：如果客戶端開啟 Keep-Alive 連續發送多個 HTTP 請求，
@@ -246,20 +273,29 @@ async fn run_tcp_server(addr: SocketAddr, pt: ProtocolType) -> Result<(), std::i
                     while let Some(result) = framed.next().await {
                         match result {
                             Ok(request) => {
-                                // 業務處理：依據請求內容構建 HTTP 回應報文
-                                println!("Received HTTP Request: {} {}", request.method, request.path);
-                                
-                                let response = HttpResponse {
-                                    status_code: 200,
-                                    status_text: "OK",
-                                    headers: vec![
-                                        ("Content-Type".to_string(), "text/plain".to_string()),
-                                        ("Connection".to_string(), "keep-alive".to_string()),
-                                    ],
-                                    body: b"Hello from Tokio HTTP Asynchronous Server!".to_vec(),
-                                };
+                                // // 業務處理：依據請求內容構建 HTTP 回應報文
+                                // println!("Received HTTP Request: \n{:#?}", request);
 
-                                // 🌟 這裡引發的下游網路狀態控制隱患，已先做標記（見文末高亮提醒）
+                                // let response = HttpResponse {
+                                //     status_code: 200,
+                                //     status_text: "OK",
+                                //     headers: vec![
+                                //         ("Content-Type".to_string(), "text/plain".to_string()),
+                                //         ("Connection".to_string(), "keep-alive".to_string()),
+                                //     ],
+                                //     body: b"Hello from Tokio HTTP Asynchronous Server!".to_vec(),
+                                // };
+
+                                // // 🌟 這裡引發的下游網路狀態控制隱患，已先做標記（見文末高亮提醒）
+                                // if let Err(e) = framed.send(response).await {
+                                //     eprintln!("Failed to send HTTP response: {}", e);
+                                //     break;
+                                // }
+
+                                // 1. 將請求丟入分發器，取得計算完畢的 Response 物件
+                                let response = dispatch_http_request(request).await;
+
+                                // 2. 透過雙向 Framed 將回應序列化並發送回客戶端
                                 if let Err(e) = framed.send(response).await {
                                     eprintln!("Failed to send HTTP response: {}", e);
                                     break;
@@ -278,8 +314,11 @@ async fn run_tcp_server(addr: SocketAddr, pt: ProtocolType) -> Result<(), std::i
                     while let Some(result) = framed.next().await {
                         match result {
                             Ok(complete_packet) => {
-                                println!("Received TCP custom packet: {} bytes", complete_packet.len());
-                                
+                                println!(
+                                    "Received TCP custom packet: {} bytes",
+                                    complete_packet.len()
+                                );
+
                                 // 業務處理：原樣返回（Echo）或加工後返回
                                 let response_packet = complete_packet; // 此處示例為原樣返回
 
@@ -299,7 +338,7 @@ async fn run_tcp_server(addr: SocketAddr, pt: ProtocolType) -> Result<(), std::i
                     eprintln!("Not support protocol");
                 }
             }
-            println!("{:?} client {} disconnected or completed",pt, client_addr);
+            println!("{:?} client {} disconnected or completed", pt, client_addr);
         });
     }
 }
@@ -355,8 +394,6 @@ async fn run_udp_server(addr: SocketAddr) -> Result<(), tokio::io::Error> {
     Ok(())
 }
 
-
-
 // 模擬您的業務邏輯函數
 async fn process_udp_packet(data: Vec<u8>) -> Vec<u8> {
     // 實際業務處理...
@@ -368,15 +405,121 @@ async fn process_http_packet(client_addr: SocketAddr, packet: HttpRequest) {
     // 此處收到的 packet 絕對是完整且獨立的，不會發生截斷或黏合
     println!(
         "Processed http packet from {}: \n{:#?} ",
-        client_addr,
-        packet
+        client_addr, packet
     );
     // TODO: 進行反序列化 (如 Protobuf/JSON) 與業務分發
 }
 
-async fn process_tcp_packet(addr: SocketAddr, packet: Vec<u8>) {
-}
+async fn process_tcp_packet(addr: SocketAddr, packet: Vec<u8>) {}
 
 fn canal_error_log(addr: SocketAddr, e: std::io::Error) {
     eprintln!("Protocol violation or IO error from {}: {}", addr, e);
+}
+
+/// HTTP 路由分發器：負責將不同 Method 與 Path 的請求導向專屬處理函數
+async fn dispatch_http_request(request: HttpRequest) -> HttpResponse {
+    // 將方法名轉為大寫並匹配字串切片
+    match request.method.to_uppercase().as_str() {
+        "GET" => handle_get(request).await,
+        "POST" => handle_post(request).await,
+        "OPTIONS" => handle_options(request).await,
+        _ => {
+            // 對於未實作的 Method（如 PUT, DELETE），回傳 405 Method Not Allowed
+            HttpResponse {
+                status_code: 405,
+                status_text: "Method Not Allowed",
+                headers: vec![
+                    ("Content-Type".to_string(), "text/plain".to_string()),
+                    ("Connection".to_string(), "keep-alive".to_string()),
+                ],
+                body: b"405 Method Not Allowed".to_vec(),
+            }
+        }
+    }
+}
+
+/// 專門處理 GET 請求
+async fn handle_get(request: HttpRequest) -> HttpResponse {
+    println!("Handling GET request for path: {:#?}", request);
+    
+    // 尋找名為 "id" 的參數
+    let target_id = request.query_params.iter()
+        .find(|(k, _)| k == "id")
+        .map(|(_, v)| v.as_str());
+
+    let body_content = match request.path.as_str() {
+        "/user" => {
+            if let Some(id) = target_id {
+                format!("Fetching data for User ID: {}", id).into_bytes()
+            } else {
+                b"Missing 'id' parameter".to_vec()
+            }
+        }
+        _ => b"Hello World".to_vec(),
+    };
+
+    HttpResponse {
+        status_code: 200,
+        status_text: "OK",
+        headers: vec![("Content-Type".to_string(), "text/plain".to_string())],
+        body: body_content,
+    }
+}
+
+/// 專門處理 POST 請求
+async fn handle_post(request: HttpRequest) -> HttpResponse {
+    println!("Handling POST request for path: {:#?}", request);
+
+    // 運用您在 Codec 中貼心提取的 content_type 進行嚴謹校驗
+    if let Some(ref c_type) = request.content_type {
+        if c_type.contains("application/json") {
+            // 這裡可以安全地對 request.body 進行 JSON 反序列化 (例如使用 serde_json)
+            println!("Received JSON Payload size: {} bytes", request.body.len());
+        }
+    }
+
+    HttpResponse {
+        status_code: 201,
+        status_text: "Created",
+        headers: vec![
+            ("Content-Type".to_string(), "application/json".to_string()),
+            ("Connection".to_string(), "keep-alive".to_string()),
+        ],
+        body: b"{\"message\":\"Data processed successfully\"}".to_vec(),
+    }
+}
+
+/// 專門處理 OPTIONS 請求（CORS 跨域預檢）
+async fn handle_options(request: HttpRequest) -> HttpResponse {
+    println!("Handling OPTIONS preflight request for path: {:#?}", request);
+
+    // OPTIONS 請求通常不需要 Body，但必須回傳正確的 跨域允許 Headers
+    HttpResponse {
+        status_code: 204, // 204 No Content 是標準 OPTIONS 最常見的回傳碼
+        status_text: "No Content",
+        headers: vec![
+            ("Access-Control-Allow-Origin".to_string(), "*".to_string()),
+            (
+                "Access-Control-Allow-Methods".to_string(),
+                "GET, POST, OPTIONS".to_string(),
+            ),
+            (
+                "Access-Control-Allow-Headers".to_string(),
+                "Content-Type, Authorization".to_string(),
+            ),
+            ("Access-Control-Max-Age".to_string(), "86400".to_string()), // 快取預檢結果 24 小時
+            ("Connection".to_string(), "keep-alive".to_string()),
+        ],
+        body: Vec::new(), // 空 Body
+    }
+}
+
+/// 404 輔助函數
+fn handle_404() -> HttpResponse {
+    HttpResponse {
+        status_code: 404,
+        status_text: "Not Found",
+        headers: vec![("Content-Type".to_string(), "text/plain".to_string())],
+        body: b"404 Not Found".to_vec(),
+    }
 }
