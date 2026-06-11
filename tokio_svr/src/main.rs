@@ -1,10 +1,10 @@
 use std::net::SocketAddr;
 use tokio::net::{TcpListener, UdpSocket};
 
-use bytes::{Buf, BytesMut};
+use bytes::{Buf, BufMut, BytesMut};
 use std::io;
 use tokio::sync::mpsc;
-use tokio_util::codec::Decoder;
+use tokio_util::codec::{Decoder, Encoder};
 
 // 必須引入此 Trait，編譯器才能在 FramedRead 上找到 .next() 方法
 use futures::StreamExt;
@@ -48,9 +48,9 @@ pub enum ProtocolType {
 }
 
 /// 定義我們的自定義協議：[4 bytes 長度 (大端序)] + [N bytes 實際數據]
-pub struct TcpProtocolCodec;
+pub struct TcpCodec;
 
-impl Decoder for TcpProtocolCodec {
+impl Decoder for TcpCodec {
     type Item = Vec<u8>; // 解碼成功後返回完整的字節包
     type Error = io::Error;
 
@@ -81,6 +81,19 @@ impl Decoder for TcpProtocolCodec {
     }
 }
 
+// 實作 Encoder：將要返回的字節包加上 4 字節大端序長度頭
+impl Encoder<Vec<u8>> for TcpCodec {
+    type Error = io::Error;
+
+    fn encode(&mut self, item: Vec<u8>, dst: &mut BytesMut) -> Result<(), Self::Error> {
+        // 1. 寫入 4 字節的長度前綴
+        dst.put_u32(item.len() as u32);
+        // 2. 寫入實際數據
+        dst.put_slice(&item);
+        Ok(())
+    }
+}
+
 /// 定義解析成功後的 HTTP 請求結構體
 #[derive(Debug)]
 pub struct HttpRequest {
@@ -90,9 +103,19 @@ pub struct HttpRequest {
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
 }
-pub struct HttpDecoder;
 
-impl Decoder for HttpDecoder {
+#[derive(Debug)]
+// 封裝自定義的 HTTP 回應結構
+pub struct HttpResponse {
+    pub status_code: u16,
+    pub status_text: &'static str,
+    pub headers: Vec<(String, String)>,
+    pub body: Vec<u8>,
+}
+
+pub struct HttpCodec;
+
+impl Decoder for HttpCodec {
     type Item = HttpRequest;
     type Error = io::Error;
 
@@ -174,6 +197,36 @@ impl Decoder for HttpDecoder {
     }
 }
 
+// 實作 Encoder：將 HttpResponse 結構體轉化為標準 HTTP/1.1 文本報文
+impl Encoder<HttpResponse> for HttpCodec {
+    type Error = io::Error;
+
+    fn encode(&mut self, item: HttpResponse, dst: &mut BytesMut) -> Result<(), Self::Error> {
+        // 1. 寫入狀態行 (Status Line) -> HTTP/1.1 200 OK\r\n
+        let status_line = format!("HTTP/1.1 {} {}\r\n", item.status_code, item.status_text);
+        dst.put_slice(status_line.as_bytes());
+
+        // 2. 自動計算並寫入關鍵的 Content-Length 標頭
+        let mut has_content_length = false;
+        for (name, value) in &item.headers {
+            if name.eq_ignore_ascii_case("Content-Length") {
+                has_content_length = true;
+            }
+            dst.put_slice(format!("{}: {}\r\n", name, value).as_bytes());
+        }
+
+        if !has_content_length {
+            dst.put_slice(format!("Content-Length: {}\r\n", item.body.len()).as_bytes());
+        }
+
+        // 3. 寫入空行（CRLF）標記 Headers 結束
+        dst.put_slice(b"\r\n");
+
+        // 4. 寫入實體負載 (Body)
+        dst.put_slice(&item.body);
+        Ok(())
+    }
+}
 async fn run_tcp_server(addr: SocketAddr, pt: ProtocolType) -> Result<(), std::io::Error> {
     let listener = TcpListener::bind(addr).await?;
     println!("{:?} server listening on {}", pt, addr);
@@ -182,47 +235,69 @@ async fn run_tcp_server(addr: SocketAddr, pt: ProtocolType) -> Result<(), std::i
         let (socket, client_addr) = listener.accept().await?;
         println!("New {:?} connection from: {}", pt, client_addr);
 
-        // 👈 🌟 這裡引發的下游併發資源隔離隱患，已先做標記（見文末高亮提醒）
         tokio::spawn(async move {
             match pt {
-                // 2. 正確使用全路徑枚舉匹配
                 ProtocolType::HTTP => {
-                    // 3. 移除 Box::pin，直接在棧上分配，享受零成本抽象（Zero-cost abstraction）
-                    let mut framed_reader = tokio_util::codec::FramedRead::new(socket, HttpDecoder);
+                    // 使用 Framed::new 建立雙向通道
+                    let mut framed = tokio_util::codec::FramedRead::new(socket, HttpCodec);
 
-                    while let Some(result) = framed_reader.next().await {
+                    while let Some(result) = framed.next().await {
                         match result {
-                            Ok(complete_packet) => {
-                                process_http_packet(client_addr, complete_packet).await;
+                            Ok(request) => {
+                                // 業務處理：依據請求內容構建 HTTP 回應報文
+                                println!("Received HTTP Request: {} {}", request.method, request.path);
+                                
+                                let response = HttpResponse {
+                                    status_code: 200,
+                                    status_text: "OK",
+                                    headers: vec![
+                                        ("Content-Type".to_string(), "text/plain".to_string()),
+                                        ("Connection".to_string(), "keep-alive".to_string()),
+                                    ],
+                                    body: b"Hello from Tokio HTTP Asynchronous Server!".to_vec(),
+                                };
+
+                                // 🌟 這裡引發的下游網路狀態控制隱患，已先做標記（見文末高亮提醒）
+                                if let Err(e) = framed.send(response).await {
+                                    eprintln!("Failed to send HTTP response: {}", e);
+                                    break;
+                                }
                             }
                             Err(e) => {
-                                canal_error_log(client_addr, e);
+                                eprintln!("HTTP Protocol error: {}", e);
                                 break;
                             }
                         }
                     }
                 }
                 ProtocolType::TCP => {
-                    // 將先前的自定義 TCP 長度解碼器完美整合進此分支
-                    let mut framed_reader = tokio_util::codec::FramedRead::new(socket, TcpProtocolCodec);
+                    let mut framed = tokio_util::codec::FramedRead::new(socket, TcpCodec);
 
-                    while let Some(result) = framed_reader.next().await {
+                    while let Some(result) = framed.next().await {
                         match result {
                             Ok(complete_packet) => {
-                                process_tcp_packet(client_addr, complete_packet).await;
+                                println!("Received TCP custom packet: {} bytes", complete_packet.len());
+                                
+                                // 業務處理：原樣返回（Echo）或加工後返回
+                                let response_packet = complete_packet; // 此處示例為原樣返回
+
+                                if let Err(e) = framed.send(response_packet).await {
+                                    eprintln!("Failed to send TCP response: {}", e);
+                                    break;
+                                }
                             }
                             Err(e) => {
-                                canal_error_log(client_addr, e);
+                                eprintln!("TCP Protocol error: {}", e);
                                 break;
                             }
                         }
                     }
                 }
                 _ => {
-                    eprintln!("ProtocolType not support");
+                    eprintln!("Not support protocol");
                 }
             }
-            println!("TCP client {} disconnected or completed", client_addr);
+            println!("{:?} client {} disconnected or completed",pt, client_addr);
         });
     }
 }
@@ -290,7 +365,7 @@ async fn process_udp_packet(data: Vec<u8>) -> Vec<u8> {
 async fn process_http_packet(client_addr: SocketAddr, packet: HttpRequest) {
     // 此處收到的 packet 絕對是完整且獨立的，不會發生截斷或黏合
     println!(
-        "Processed http packet from {}: http {:?} ",
+        "Processed http packet from {}: \n{:#?} ",
         client_addr,
         packet
     );
