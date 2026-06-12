@@ -1,4 +1,7 @@
 use std::net::SocketAddr;
+use std::sync::Arc;
+use std::time::Duration;
+
 use tokio::net::{TcpListener, UdpSocket};
 
 // use bytes::{Buf, BufMut, BytesMut};
@@ -14,7 +17,7 @@ use tokio_util::codec::Framed; // 👈 由 FramedRead 改為雙向的 Framed // 
 use sqlx::postgres::PgPoolOptions;
 use sqlx_postgres::PgConnectOptions;
 
-use std::time::Duration;
+
 
 // 🚀 1. 關鍵：宣告引入 protocol 模組資料夾
 mod meta;
@@ -67,7 +70,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .connect_with(opt)
         .await
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-    
 
     // tracing::info!(
     //     "{} conn to {:?} num={:?} elapse_time={:?} finish!!!!",
@@ -77,6 +79,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //     st.elapsed()
     // );
 
+    let ctx = Arc::new(AppContext {
+        pg_db: db_pool,
+    });
 
     // 定義監聽地址
     let http_addr: SocketAddr = format!("{}:{}", app_cfg.http_bind, app_cfg.http_port)
@@ -103,21 +108,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 format!("Failed to parse SocketAddr: {}", e),
             )
         })?;
+
     println!("Starting Echo Server...");
+
+    
 
     // 使用 tokio::select! 同時併發監聽 TCP 與 UDP 服務
     tokio::select! {
-        http_res = run_tcp_server(http_addr,ProtocolType::HTTP) => {
+        http_res = run_tcp_server(http_addr,TcpProtocolType::HTTP,Arc::clone(&ctx)) => {
             if let Err(e) = http_res {
                 eprintln!("HTTP server error: {}", e);
             }
         }
-        tcp_res = run_tcp_server(tcp_addr,ProtocolType::TCP) => {
+        tcp_res = run_tcp_server(tcp_addr,TcpProtocolType::TCP,Arc::clone(&ctx)) => {
             if let Err(e) = tcp_res {
                 eprintln!("TCP server error: {}", e);
             }
         }
-        udp_res = run_udp_server(udp_addr) => {
+        udp_res = run_udp_server(udp_addr,Arc::clone(&ctx)) => {
             if let Err(e) = udp_res {
                 eprintln!("UDP server error: {}", e);
             }
@@ -128,12 +136,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub enum ProtocolType {
+pub enum TcpProtocolType {
     HTTP,
     TCP,
+    GRPC,
 }
 
-async fn run_tcp_server(addr: SocketAddr, pt: ProtocolType) -> Result<(), std::io::Error> {
+async fn run_tcp_server(addr: SocketAddr, pt: TcpProtocolType, ctx: Arc<AppContext>) -> Result<(), std::io::Error> {
     let listener = TcpListener::bind(addr).await?;
     println!("{:?} server listening on {}", pt, addr);
 
@@ -143,7 +152,7 @@ async fn run_tcp_server(addr: SocketAddr, pt: ProtocolType) -> Result<(), std::i
 
         tokio::spawn(async move {
             match pt {
-                ProtocolType::HTTP => {
+                TcpProtocolType::HTTP => {
                     // 使用 Framed::new 建立雙向通道
                     let mut framed = Framed::new(socket, HttpCodec);
 
@@ -156,6 +165,7 @@ async fn run_tcp_server(addr: SocketAddr, pt: ProtocolType) -> Result<(), std::i
                                 // let response = HttpResponse {
                                 //     status_code: 200,
                                 //     status_text: "OK",
+       
                                 //     headers: vec![
                                 //         ("Content-Type".to_string(), "text/plain".to_string()),
                                 //         ("Connection".to_string(), "keep-alive".to_string()),
@@ -185,7 +195,7 @@ async fn run_tcp_server(addr: SocketAddr, pt: ProtocolType) -> Result<(), std::i
                         }
                     }
                 }
-                ProtocolType::TCP => {
+                TcpProtocolType::TCP => {
                     let mut framed = Framed::new(socket, TcpCodec);
 
                     while let Some(result) = framed.next().await {
@@ -220,7 +230,7 @@ async fn run_tcp_server(addr: SocketAddr, pt: ProtocolType) -> Result<(), std::i
     }
 }
 
-async fn run_udp_server(addr: SocketAddr) -> Result<(), tokio::io::Error> {
+async fn run_udp_server(addr: SocketAddr, ctx: Arc<AppContext>) -> Result<(), tokio::io::Error> {
     // 1. 綁定 UDP 端口，並用 Arc 封裝以利在多個 Task 間共享
     let socket = std::sync::Arc::new(UdpSocket::bind(addr).await?);
     println!("UDP server listening on {}", addr);
@@ -435,4 +445,15 @@ fn handle_404() -> HttpResponse {
         headers: vec![("Content-Type".to_string(), "text/plain".to_string())],
         body: b"404 Not Found".to_vec(),
     }
+}
+
+// fn new_socket_addr(bind:IpAddr,port:u16) -> SocketAddr {
+//     // 🚀 核心優化：直接在棧上透過二進位制數值構造，具備 O(1) 極致性能
+//     SocketAddr::new(bind, port)
+// }
+
+#[derive(Clone)]
+pub struct AppContext {
+    pub pg_db: sqlx::Pool<sqlx::Postgres>,
+    
 }
