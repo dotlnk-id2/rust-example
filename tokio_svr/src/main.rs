@@ -41,16 +41,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 数据库连接
     let db_opt = &app_cfg.pool_opt;
     let db_cfg = app_cfg.database.get("slave-2").unwrap();
-    // tracing::info!(
-    //     "database connection config: num={} wait_time={}s ",
-    //     db_opt.min_conn,
-    //     db_opt.acquire_timeout
-    // );
-    // let db_st = tokio::time::Instant::now();
+    println!(
+         "database connection config: num={} wait_time={}s ",
+         db_opt.min_conn,
+         db_opt.acquire_timeout
+     );
+    let db_st = tokio::time::Instant::now();
 
     let opt = PgConnectOptions::new()
-        // .ssl_mode(sqlx_postgres::PgSslMode::Require)
-        .ssl_mode(sqlx_postgres::PgSslMode::Prefer)
+        .ssl_mode(sqlx_postgres::PgSslMode::Require)
+        //.ssl_mode(sqlx_postgres::PgSslMode::Prefer)
         .host(&db_cfg.db_host)
         .port(db_cfg.db_port)
         .database(&db_cfg.db_name)
@@ -58,7 +58,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .password(&db_cfg.from_raw_pwd().unwrap())
         .application_name(&db_cfg.db_alias);
 
-    // let db_url = db_cfg.clone().from_db().unwrap();
+    let db_url = db_cfg.clone().from_db().unwrap();
     let db_pool = PgPoolOptions::new()
         .min_connections(db_opt.min_conn)
         .max_connections(db_opt.max_conn)
@@ -71,13 +71,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
 
-    // tracing::info!(
-    //     "{} conn to {:?} num={:?} elapse_time={:?} finish!!!!",
-    //     db_cfg,
-    //     db_url,
-    //     db_opt.min_conn,
-    //     st.elapsed()
-    // );
+     println!(
+         "{:?} conn to {:?} num={:?} elapse_time={:?} finish!!!!",
+         db_cfg,
+         db_url,
+         db_opt.min_conn,
+         db_st.elapsed()
+     );
 
     let ctx = Arc::new(AppContext {
         pg_db: db_pool,
