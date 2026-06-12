@@ -11,29 +11,105 @@ use futures::SinkExt;
 use futures::StreamExt;
 use tokio_util::codec::Framed; // 👈 由 FramedRead 改為雙向的 Framed // 👈 必須引入 SinkExt 才能使用 .send()
 
+use sqlx::postgres::PgPoolOptions;
+use sqlx_postgres::PgConnectOptions;
+
+use std::time::Duration;
 
 // 🚀 1. 關鍵：宣告引入 protocol 模組資料夾
-mod protocol;
 mod meta;
+mod protocol;
 
 // 🚀 2. 使用在 mod.rs 中重出口的乾淨路徑
+use meta::{HttpRequest, HttpResponse};
 use protocol::{HttpCodec, TcpCodec};
-use meta::{HttpRequest,HttpResponse};
+
+const DEFAULT_CONFIG_PATH: &str = "config.toml";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 定義監聽地址
-    let http_addr: SocketAddr = "127.0.0.1:8088".parse()?;
-    let tcp_addr: SocketAddr = "127.0.0.1:8080".parse()?;
-    let udp_addr: SocketAddr = "127.0.0.1:8081".parse()?;
+    let cfg = config::Config::builder()
+        .add_source(config::File::with_name(DEFAULT_CONFIG_PATH))
+        .build()
+        .expect(format!("load fs={} error", DEFAULT_CONFIG_PATH).as_str());
 
+    let app_cfg: meta::config_meta::AppConfig = cfg.try_deserialize()?;
+
+    // 数据库连接
+    let db_opt = &app_cfg.pool_opt;
+    let db_cfg = app_cfg.database.get("slave-2").unwrap();
+    // tracing::info!(
+    //     "database connection config: num={} wait_time={}s ",
+    //     db_opt.min_conn,
+    //     db_opt.acquire_timeout
+    // );
+    // let db_st = tokio::time::Instant::now();
+
+    let opt = PgConnectOptions::new()
+        // .ssl_mode(sqlx_postgres::PgSslMode::Require)
+        .ssl_mode(sqlx_postgres::PgSslMode::Prefer)
+        .host(&db_cfg.db_host)
+        .port(db_cfg.db_port)
+        .database(&db_cfg.db_name)
+        .username(&db_cfg.db_user)
+        .password(&db_cfg.from_raw_pwd().unwrap())
+        .application_name(&db_cfg.db_alias);
+
+    // let db_url = db_cfg.clone().from_db().unwrap();
+    let db_pool = PgPoolOptions::new()
+        .min_connections(db_opt.min_conn)
+        .max_connections(db_opt.max_conn)
+        .acquire_timeout(Duration::from_secs(db_opt.acquire_timeout))
+        .idle_timeout(Duration::from_secs(db_opt.idle_timeout))
+        .max_lifetime(Duration::from_secs(db_opt.max_lifetime))
+        .acquire_slow_threshold(Duration::from_millis(500))
+        .test_before_acquire(true)
+        .connect_with(opt)
+        .await
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    
+
+    // tracing::info!(
+    //     "{} conn to {:?} num={:?} elapse_time={:?} finish!!!!",
+    //     db_cfg,
+    //     db_url,
+    //     db_opt.min_conn,
+    //     st.elapsed()
+    // );
+
+
+    // 定義監聽地址
+    let http_addr: SocketAddr = format!("{}:{}", app_cfg.http_bind, app_cfg.http_port)
+        .parse()
+        .map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("Failed to parse SocketAddr: {}", e),
+            )
+        })?;
+    let tcp_addr: SocketAddr = format!("{}:{}", app_cfg.tcp_bind, app_cfg.tcp_port)
+        .parse()
+        .map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("Failed to parse SocketAddr: {}", e),
+            )
+        })?;
+    let udp_addr: SocketAddr = format!("{}:{}", app_cfg.udp_bind, app_cfg.udp_port)
+        .parse()
+        .map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("Failed to parse SocketAddr: {}", e),
+            )
+        })?;
     println!("Starting Echo Server...");
 
     // 使用 tokio::select! 同時併發監聽 TCP 與 UDP 服務
     tokio::select! {
         http_res = run_tcp_server(http_addr,ProtocolType::HTTP) => {
             if let Err(e) = http_res {
-                eprintln!("http server error: {}", e);
+                eprintln!("HTTP server error: {}", e);
             }
         }
         tcp_res = run_tcp_server(tcp_addr,ProtocolType::TCP) => {
@@ -55,7 +131,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 pub enum ProtocolType {
     HTTP,
     TCP,
-    UDP,
 }
 
 async fn run_tcp_server(addr: SocketAddr, pt: ProtocolType) -> Result<(), std::io::Error> {
@@ -282,7 +357,6 @@ async fn dispatch_http_request(request: HttpRequest) -> HttpResponse {
 
 /// 專門處理 GET 請求
 async fn handle_get(request: HttpRequest) -> HttpResponse {
-
     // 尋找名為 "id" 的參數
     let target_id = request
         .query_params
@@ -311,7 +385,6 @@ async fn handle_get(request: HttpRequest) -> HttpResponse {
 
 /// 專門處理 POST 請求
 async fn handle_post(request: HttpRequest) -> HttpResponse {
-
     // 運用您在 Codec 中貼心提取的 content_type 進行嚴謹校驗
     if let Some(ref c_type) = request.content_type {
         if c_type.contains("application/json") {

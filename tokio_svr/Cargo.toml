@@ -21,11 +21,21 @@ bytes = "1"
 futures = "0.3" # 為了使用 StreamExt 的 next() 方法
 httparse = "1.8" # 專為異步流設計的高性能 HTTP 解析器
 
-# clap = "4.5" # terminal cmd param
+sqlx = { version = "0.9", default-features = false, features = [
+    "postgres",
+    "runtime-tokio",
+    "tls-rustls-ring",
+    "macros",
+    "time",
+] }
+sqlx-core = "0.9"
+sqlx-postgres = "0.9"
 
-# config = "0.15"
-# serde = "1.0.213"
-# serde_json = "1.0.137"
+# clap = "4.5" # terminal cmd param
+config = "0.15"
+
+serde = "1.0.213"
+serde_json = "1.0.137"
 
 # tracing = { version = "0.1.35", features = ["std"] }
 # tracing-core = "0.1.28"

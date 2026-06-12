@@ -1,0 +1,89 @@
+# server 2c4g
+# ===================
+# kv
+http_bind="0.0.0.0"
+http_port=8088
+http_enable=true
+tcp_addr="0.0.0.0"
+tcp_port=8081
+tcp_enable=true
+udp_addr="0.0.0.0"
+udp_port=8082
+udp_enable=false
+bind_key="./ssl/key.pem"
+bind_cer="./ssl/cert.pem"
+worker_num=4
+wait_queue_num=4096
+max_connections=65536
+max_connection_rate=1024
+client_request_timeout=30
+client_disconnect_timeout=15
+tls_handshake_timeout=3
+keep_alive=300
+shutdown_timeout=60
+stdout_log=true
+log_enable=false
+log_path="./web.log"
+optl_enable=false
+optl_endpoint="http://localhost:4317"
+
+# T
+[redis_opt]
+cluster_type="base" # base , sharding
+redis_addr="localhost"
+redis_port=6379
+redis_pass="test1test2"
+redis_max_size=64
+redis_min_idle=16
+redis_max_lifetime=60
+redis_conn_timeout=5
+
+[pool_opt]
+min_conn=8
+max_conn=64
+conn_timeout=5
+acquire_timeout=30
+idle_timeout=300
+max_lifetime=3600
+sqlx_log_enable=true
+
+# HahMap<K,V>
+[database]
+    [database.master]
+    db_alias="nosql"
+    db_type="mongo"
+    db_host="127.0.0.1"
+    db_port=27017
+    db_name="test_db"
+    db_user="root_rw"
+    db_passwd_type="raw"
+    db_passwd="root123"
+
+    [database.slave-1]
+    db_alias="rdbms"
+    db_type="mysql"
+    db_host="127.0.0.1"
+    db_port=3306
+    db_name="test_db"
+    db_user="root"
+    db_passwd_type="raw"
+    db_passwd="root123"
+
+    [database.slave-2]
+    db_alias="rdbms"
+    db_type="pgsql"
+    db_host="127.0.0.1"
+    db_port=5432
+    db_name="test_db"
+    db_user="dev"
+    db_passwd_type="raw"
+    db_passwd="dev@123"
+
+
+# Vec<T>
+[[route_mapping]]
+prefix="/api/notes/"
+target="notes-api1"
+[[route_mapping]]
+prefix="/api/notes/"
+target="notes-api2"
