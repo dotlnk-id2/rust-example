@@ -4,7 +4,7 @@
 http_bind="0.0.0.0"
 http_port=8088
 http_enable=true
-tcp_addr="0.0.0.0"
+tcp_bind="0.0.0.0"
 tcp_port=8081
 tcp_enable=true
 udp_addr="0.0.0.0"
