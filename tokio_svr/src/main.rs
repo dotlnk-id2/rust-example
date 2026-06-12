@@ -1,15 +1,24 @@
 use std::net::SocketAddr;
 use tokio::net::{TcpListener, UdpSocket};
 
-use bytes::{Buf, BufMut, BytesMut};
-use std::io;
+// use bytes::{Buf, BufMut, BytesMut};
+// use std::io;
 use tokio::sync::mpsc;
-use tokio_util::codec::{Decoder, Encoder};
+// use tokio_util::codec::{Decoder, Encoder};
 
 // 必須引入此 Trait，編譯器才能在 FramedRead 上找到 .next() 方法
 use futures::SinkExt;
 use futures::StreamExt;
 use tokio_util::codec::Framed; // 👈 由 FramedRead 改為雙向的 Framed // 👈 必須引入 SinkExt 才能使用 .send()
+
+
+// 🚀 1. 關鍵：宣告引入 protocol 模組資料夾
+mod protocol;
+mod meta;
+
+// 🚀 2. 使用在 mod.rs 中重出口的乾淨路徑
+use protocol::{HttpCodec, TcpCodec};
+use meta::{HttpRequest,HttpResponse};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -49,213 +58,6 @@ pub enum ProtocolType {
     UDP,
 }
 
-/// 定義我們的自定義協議：[4 bytes 長度 (大端序)] + [N bytes 實際數據]
-pub struct TcpCodec;
-
-impl Decoder for TcpCodec {
-    type Item = Vec<u8>; // 解碼成功後返回完整的字節包
-    type Error = io::Error;
-
-    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        // 1. 檢查是否足夠讀取 4 bytes 的長度頭
-        if src.len() < 4 {
-            return Ok(None); // 數據不足，通知 Tokio 繼續讀取網絡流
-        }
-
-        // 2. 預讀取長度頭 (不消耗游標)
-        let mut length_bytes = [0u8; 4];
-        length_bytes.copy_from_slice(&src[..4]);
-        let payload_length = u32::from_be_bytes(length_bytes) as usize;
-
-        // 3. 檢查當前緩衝區的數據是否足夠包含整個封包 (Header + Payload)
-        let total_frame_length = 4 + payload_length;
-        if src.len() < total_frame_length {
-            // 發生「半包」：通知 Tokio 繼續接收數據，直到滿足 total_frame_length
-            return Ok(None);
-        }
-
-        // 4. 數據充足，開始提取！
-        src.advance(4); // 推進游標，消耗掉 4 bytes 的 Header
-        let payload = src.split_to(payload_length).freeze().to_vec(); // 零拷貝切割出 Payload
-
-        // 5. 發生「黏包」時：剩餘的數據會保留在 src 中，等待下一次 decode 被調用
-        Ok(Some(payload))
-    }
-}
-
-// 實作 Encoder：將要返回的字節包加上 4 字節大端序長度頭
-impl Encoder<Vec<u8>> for TcpCodec {
-    type Error = io::Error;
-
-    fn encode(&mut self, item: Vec<u8>, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        // 1. 寫入 4 字節的長度前綴
-        dst.put_u32(item.len() as u32);
-        // 2. 寫入實際數據
-        dst.put_slice(&item);
-        Ok(())
-    }
-}
-
-/// 定義解析成功後的 HTTP 請求結構體
-#[derive(Debug)]
-pub struct HttpRequest {
-    pub method: String,
-    pub path: String, // 👈 改造後此處僅保留純路徑 (例如: "/search")
-    pub query_params: Vec<(String, String)>, // 👈 新增：用於儲存 URL 參數
-    pub content_type: Option<String>,
-    pub headers: Vec<(String, String)>,
-    pub body: Vec<u8>,
-}
-
-#[derive(Debug)]
-// 封裝自定義的 HTTP 回應結構
-pub struct HttpResponse {
-    pub status_code: u16,
-    pub status_text: &'static str,
-    pub headers: Vec<(String, String)>,
-    pub body: Vec<u8>,
-}
-
-pub struct HttpCodec;
-
-impl Decoder for HttpCodec {
-    type Item = HttpRequest;
-    type Error = io::Error;
-
-    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        // 創建一個足夠大的不鏽鋼陣列用來暫存解析出來的 Headers 引用
-        let mut headers = [httparse::EMPTY_HEADER; 64];
-        let mut req = httparse::Request::new(&mut headers);
-
-        // 1. 嘗試解析 HTTP 請求頭
-        match req.parse(src) {
-            Ok(httparse::Status::Complete(header_len)) => {
-                // 狀態為 Complete 代表成功讀取到 \r\n\r\n，請求頭已完整接收
-
-                // 2. 獲取 Content-Length 以確定後續 Body 的長度
-                let mut content_length = 0;
-                for header in req.headers.iter() {
-                    if header.name.eq_ignore_ascii_case("Content-Length") {
-                        if let Ok(val_str) = std::str::from_utf8(header.value) {
-                            if let Ok(len) = val_str.parse::<usize>() {
-                                content_length = len;
-                            }
-                        }
-                        break;
-                    }
-                }
-
-                // 3. 檢查當前緩衝區的總長度是否足夠（Header 長度 + Body 長度）
-                let total_frame_length = header_len + content_length;
-                if src.len() < total_frame_length {
-                    // 發生「半包」：Body 數據尚未完全到達網卡，通知 Tokio 繼續讀取
-                    return Ok(None);
-                }
-
-                // 🚀 解析 URL 與 Query Parameters
-                let method = req.method.unwrap_or("").to_string();
-                let full_path = req.path.unwrap_or("");
-                let mut path = full_path.to_string();
-                let mut query_params = Vec::new();
-
-                // 檢查是否帶有 '?' 記號
-                if let Some(pos) = full_path.find('?') {
-                    // 切割出純路徑
-                    path = full_path[..pos].to_string();
-
-                    // 獲取 '?' 後面的查詢字串 (例如: "id=100&type=system")
-                    let query_str = &full_path[pos + 1..];
-
-                    // 依據 '&' 切分多個參數對
-                    for pair in query_str.split('&') {
-                        if !pair.is_empty() {
-                            // 依據 '=' 切分鍵與值，限制切分為 2 部分
-                            let mut parts = pair.splitn(2, '=');
-                            let key = parts.next().unwrap_or("").to_string();
-                            let val = parts.next().unwrap_or("").to_string();
-
-                            // 🌟 此處的百分號編碼（Percent-Encoding）隱患已先做標記（見文末高亮提醒）
-                            query_params.push((key, val));
-                        }
-                    }
-                }
-
-                // 4. 數據充足，提取關鍵數據並轉換所有權（打破對 src 的借用）
-                let mut parsed_headers = Vec::new();
-                let mut cont_typ = Option::None;
-                for h in req.headers.iter() {
-                    let _name = h.name.to_string();
-                    let _value = String::from_utf8_lossy(h.value).into_owned();
-
-                    if _name.eq_ignore_ascii_case("Content-Type") {
-                        cont_typ = Option::Some(_value);
-                    } else {
-                        parsed_headers.push((_name, _value));
-                    }
-                }
-
-                // 5. 操縱緩衝區游標
-                src.advance(header_len); // 消耗掉已經解析完的 Header 字節
-                let body = src.split_to(content_length).to_vec(); // 切割出 Body 字節
-
-                let http_request = HttpRequest {
-                    method: method,
-                    path: path,
-                    query_params:query_params,
-                    content_type: cont_typ,
-                    headers: parsed_headers,
-                    body: body,
-                };
-
-                // 6. 「黏包」處理：如果客戶端開啟 Keep-Alive 連續發送多個 HTTP 請求，
-                // 剩餘的字節仍留在 src 中，Tokio 會自動再次觸發 decode
-                Ok(Some(http_request))
-            }
-            Ok(httparse::Status::Partial) => {
-                // 發生「半包」：連 \r\n\r\n 都還沒收齊，繼續等待網絡數據
-                Ok(None)
-            }
-            Err(e) => {
-                // 惡意請求或協議錯誤，斷開連接
-                Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("Malformed HTTP Request: {}", e),
-                ))
-            }
-        }
-    }
-}
-
-// 實作 Encoder：將 HttpResponse 結構體轉化為標準 HTTP/1.1 文本報文
-impl Encoder<HttpResponse> for HttpCodec {
-    type Error = io::Error;
-
-    fn encode(&mut self, item: HttpResponse, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        // 1. 寫入狀態行 (Status Line) -> HTTP/1.1 200 OK\r\n
-        let status_line = format!("HTTP/1.1 {} {}\r\n", item.status_code, item.status_text);
-        dst.put_slice(status_line.as_bytes());
-
-        // 2. 自動計算並寫入關鍵的 Content-Length 標頭
-        let mut has_content_length = false;
-        for (name, value) in &item.headers {
-            if name.eq_ignore_ascii_case("Content-Length") {
-                has_content_length = true;
-            }
-            dst.put_slice(format!("{}: {}\r\n", name, value).as_bytes());
-        }
-
-        if !has_content_length {
-            dst.put_slice(format!("Content-Length: {}\r\n", item.body.len()).as_bytes());
-        }
-
-        // 3. 寫入空行（CRLF）標記 Headers 結束
-        dst.put_slice(b"\r\n");
-
-        // 4. 寫入實體負載 (Body)
-        dst.put_slice(&item.body);
-        Ok(())
-    }
-}
 async fn run_tcp_server(addr: SocketAddr, pt: ProtocolType) -> Result<(), std::io::Error> {
     let listener = TcpListener::bind(addr).await?;
     println!("{:?} server listening on {}", pt, addr);
@@ -418,13 +220,53 @@ fn canal_error_log(addr: SocketAddr, e: std::io::Error) {
 
 /// HTTP 路由分發器：負責將不同 Method 與 Path 的請求導向專屬處理函數
 async fn dispatch_http_request(request: HttpRequest) -> HttpResponse {
+    println!("Handling request for path: {:?}", request);
+
+    // 方法 	安全 	冪等 	可快取
+    // GET 	    是 	    是 	    是
+    // HEAD 	是 	    是 	    是
+    // OPTIONS  是 	    是 	    否
+    // TRACE 	是 	    是 	    否
+    // PUT 	    否 	    是 	    否
+    // DELETE 	否 	    是 	    否
+    // POST 	否 	    否 	    條件的*
+    // PATCH 	否 	    否 	    條件的*
+    // CONNECT  否 	    否 	    否
+
     // 將方法名轉為大寫並匹配字串切片
     match request.method.to_uppercase().as_str() {
         "GET" => handle_get(request).await,
         "POST" => handle_post(request).await,
         "OPTIONS" => handle_options(request).await,
+        "PUT" => HttpResponse {
+            status_code: 200,
+            status_text: "OK",
+            headers: vec![
+                ("Content-Type".to_string(), "text/plain".to_string()),
+                ("Connection".to_string(), "keep-alive".to_string()),
+            ],
+            body: b"PUT".to_vec(),
+        },
+        "CONNECT" => HttpResponse {
+            status_code: 200,
+            status_text: "OK",
+            headers: vec![
+                ("Content-Type".to_string(), "text/plain".to_string()),
+                ("Connection".to_string(), "keep-alive".to_string()),
+            ],
+            body: b"CONNECT".to_vec(),
+        },
+        "DELETE" => HttpResponse {
+            status_code: 200,
+            status_text: "OK",
+            headers: vec![
+                ("Content-Type".to_string(), "text/plain".to_string()),
+                ("Connection".to_string(), "keep-alive".to_string()),
+            ],
+            body: b"DELETE".to_vec(),
+        },
         _ => {
-            // 對於未實作的 Method（如 PUT, DELETE），回傳 405 Method Not Allowed
+            // 對於未實作的 Method（如 HEAD, TRACE, PATCH），回傳 405 Method Not Allowed
             HttpResponse {
                 status_code: 405,
                 status_text: "Method Not Allowed",
@@ -440,10 +282,11 @@ async fn dispatch_http_request(request: HttpRequest) -> HttpResponse {
 
 /// 專門處理 GET 請求
 async fn handle_get(request: HttpRequest) -> HttpResponse {
-    println!("Handling GET request for path: {:#?}", request);
-    
+
     // 尋找名為 "id" 的參數
-    let target_id = request.query_params.iter()
+    let target_id = request
+        .query_params
+        .iter()
         .find(|(k, _)| k == "id")
         .map(|(_, v)| v.as_str());
 
@@ -468,7 +311,6 @@ async fn handle_get(request: HttpRequest) -> HttpResponse {
 
 /// 專門處理 POST 請求
 async fn handle_post(request: HttpRequest) -> HttpResponse {
-    println!("Handling POST request for path: {:#?}", request);
 
     // 運用您在 Codec 中貼心提取的 content_type 進行嚴謹校驗
     if let Some(ref c_type) = request.content_type {
@@ -491,8 +333,6 @@ async fn handle_post(request: HttpRequest) -> HttpResponse {
 
 /// 專門處理 OPTIONS 請求（CORS 跨域預檢）
 async fn handle_options(request: HttpRequest) -> HttpResponse {
-    println!("Handling OPTIONS preflight request for path: {:#?}", request);
-
     // OPTIONS 請求通常不需要 Body，但必須回傳正確的 跨域允許 Headers
     HttpResponse {
         status_code: 204, // 204 No Content 是標準 OPTIONS 最常見的回傳碼
