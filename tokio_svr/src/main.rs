@@ -41,16 +41,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 数据库连接
     let db_opt = &app_cfg.pool_opt;
     let db_cfg = app_cfg.database.get("slave-2").unwrap();
+    let db_url = db_cfg.clone().from_db().unwrap();
     println!(
-         "database connection config: num={} wait_time={}s ",
+         "database connection {} : num={} wait_time={}s ",
+         db_url,
          db_opt.min_conn,
          db_opt.acquire_timeout
      );
     let db_st = tokio::time::Instant::now();
 
     let opt = PgConnectOptions::new()
-        .ssl_mode(sqlx_postgres::PgSslMode::Require)
-        //.ssl_mode(sqlx_postgres::PgSslMode::Prefer)
+        //.ssl_mode(sqlx_postgres::PgSslMode::Require)
+        .ssl_mode(sqlx_postgres::PgSslMode::Disable)
         .host(&db_cfg.db_host)
         .port(db_cfg.db_port)
         .database(&db_cfg.db_name)
@@ -58,7 +60,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .password(&db_cfg.from_raw_pwd().unwrap())
         .application_name(&db_cfg.db_alias);
 
-    let db_url = db_cfg.clone().from_db().unwrap();
     let db_pool = PgPoolOptions::new()
         .min_connections(db_opt.min_conn)
         .max_connections(db_opt.max_conn)

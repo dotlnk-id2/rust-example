@@ -77,7 +77,7 @@ sqlx_log_enable=true
     db_name="test_db"
     db_user="dev"
     db_passwd_type="raw"
-    db_passwd="dev@123"
+    db_passwd="test1test2"
 
 
 # Vec<T>
