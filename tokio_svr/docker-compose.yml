@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:latest
+    container_name: redis_dev
+    ports:
+      - "127.0.0.1:6379:6379"  # 限制僅宿主機存取
+    command: redis-server --requirepass test1test2  # 設定密碼
+    restart: always
+
+  postgres:
+    image: postgres:latest
+    container_name: pg_dev
+    environment:
+      POSTGRES_USER: dev
+      POSTGRES_PASSWORD: 'test1test2'
+    ports:
+      - "127.0.0.1:5432:5432"  # 關鍵：限定只能本機連線
+    restart: always
