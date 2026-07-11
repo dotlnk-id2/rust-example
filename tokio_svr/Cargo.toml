@@ -27,6 +27,8 @@ sqlx = { version = "0.9", default-features = false, features = [
     "tls-rustls-ring",
     "macros",
     "time",
+    "sqlite", 
+    "sqlite-deserialize"
 ] }
 sqlx-core = "0.9"
 sqlx-postgres = "0.9"

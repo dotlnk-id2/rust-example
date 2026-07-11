@@ -2,6 +2,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use sqlx::{Connection as _, SqliteConnection};
 use tokio::net::{TcpListener, UdpSocket};
 
 // use bytes::{Buf, BufMut, BytesMut};
@@ -16,8 +17,6 @@ use tokio_util::codec::Framed; // 👈 由 FramedRead 改為雙向的 Framed // 
 
 use sqlx::postgres::PgPoolOptions;
 use sqlx_postgres::PgConnectOptions;
-
-
 
 // 🚀 1. 關鍵：宣告引入 protocol 模組資料夾
 mod meta;
@@ -38,50 +37,81 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let app_cfg: meta::config_meta::AppConfig = cfg.try_deserialize()?;
 
-    // 数据库连接
+    // sqlite3 "sqlite::memory:"
     let db_opt = &app_cfg.pool_opt;
-    let db_cfg = app_cfg.database.get("slave-2").unwrap();
+    let db_cfg = app_cfg.database.get("slave-3").unwrap();
     let db_url = db_cfg.clone().from_db().unwrap();
     println!(
-         "database connection {} : num={} wait_time={}s ",
-         db_url,
-         db_opt.min_conn,
-         db_opt.acquire_timeout
-     );
+        "{} database connection {}",
+        db_cfg.db_type, db_url
+    );
     let db_st = tokio::time::Instant::now();
 
-    let opt = PgConnectOptions::new()
-        //.ssl_mode(sqlx_postgres::PgSslMode::Require)
-        .ssl_mode(sqlx_postgres::PgSslMode::Disable)
-        .host(&db_cfg.db_host)
-        .port(db_cfg.db_port)
-        .database(&db_cfg.db_name)
-        .username(&db_cfg.db_user)
-        .password(&db_cfg.from_raw_pwd().unwrap())
-        .application_name(&db_cfg.db_alias);
+    // let mut conn: SqliteConnection = SqliteConnection::connect(&db_url).await?;
 
-    let db_pool = PgPoolOptions::new()
-        .min_connections(db_opt.min_conn)
-        .max_connections(db_opt.max_conn)
-        .acquire_timeout(Duration::from_secs(db_opt.acquire_timeout))
-        .idle_timeout(Duration::from_secs(db_opt.idle_timeout))
-        .max_lifetime(Duration::from_secs(db_opt.max_lifetime))
-        .acquire_slow_threshold(Duration::from_millis(500))
-        .test_before_acquire(true)
-        .connect_with(opt)
-        .await
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-
+    let opt = sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(&db_url)
+        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+        .busy_timeout(std::time::Duration::from_secs(db_opt.conn_timeout))
+        .auto_vacuum(sqlx::sqlite::SqliteAutoVacuum::Incremental)
+        .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
+        .create_if_missing(true)
+        .statement_cache_capacity(10000)
+        ;
+    let sqlite3_db = sqlx::SqlitePool::connect_with(opt).await?;
      println!(
-         "{:?} conn to {:?} num={:?} elapse_time={:?} finish!!!!",
+         "{:?} conn to {:?} busy_timeout={:?} elapse_time={:?} finish!!!!",
          db_cfg,
          db_url,
-         db_opt.min_conn,
+         db_opt.conn_timeout,
          db_st.elapsed()
      );
 
-    let ctx = Arc::new(AppContext {
-        pg_db: db_pool,
+    // postgresql
+    // let db_opt = &app_cfg.pool_opt;
+    // let db_cfg = app_cfg.database.get("slave-2").unwrap();
+    // let db_url = db_cfg.clone().from_db().unwrap();
+    // println!(
+    //      "database connection {} : num={} wait_time={}s ",
+    //      db_url,
+    //      db_opt.min_conn,
+    //      db_opt.acquire_timeout
+    //  );
+    // let db_st = tokio::time::Instant::now();
+
+    // let opt = PgConnectOptions::new()
+    //     //.ssl_mode(sqlx_postgres::PgSslMode::Require)
+    //     .ssl_mode(sqlx_postgres::PgSslMode::Disable)
+    //     .host(&db_cfg.db_host)
+    //     .port(db_cfg.db_port)
+    //     .database(&db_cfg.db_name)
+    //     .username(&db_cfg.db_user)
+    //     .password(&db_cfg.from_raw_pwd().unwrap())
+    //     .application_name(&db_cfg.db_alias);
+
+    // let postgres_db = PgPoolOptions::new()
+    //     .min_connections(db_opt.min_conn)
+    //     .max_connections(db_opt.max_conn)
+    //     .acquire_timeout(Duration::from_secs(db_opt.acquire_timeout))
+    //     .idle_timeout(Duration::from_secs(db_opt.idle_timeout))
+    //     .max_lifetime(Duration::from_secs(db_opt.max_lifetime))
+    //     .acquire_slow_threshold(Duration::from_millis(500))
+    //     .test_before_acquire(true)
+    //     .connect_with(opt)
+    //     .await
+    //     .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+
+    //  println!(
+    //      "{:?} conn to {:?} num={:?} elapse_time={:?} finish!!!!",
+    //      db_cfg,
+    //      db_url,
+    //      db_opt.min_conn,
+    //      db_st.elapsed()
+    //  );
+
+    let ctx = Arc::new(AppContext { 
+        // pg_db: postgres_db 
+        fs_db: sqlite3_db,
     });
 
     // 定義監聽地址
@@ -112,8 +142,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Starting Echo Server...");
 
-    
-
     // 使用 tokio::select! 同時併發監聽 TCP 與 UDP 服務
     tokio::select! {
         http_res = run_tcp_server(http_addr,TcpProtocolType::HTTP,Arc::clone(&ctx)) => {
@@ -143,7 +171,11 @@ pub enum TcpProtocolType {
     GRPC,
 }
 
-async fn run_tcp_server(addr: SocketAddr, pt: TcpProtocolType, ctx: Arc<AppContext>) -> Result<(), std::io::Error> {
+async fn run_tcp_server(
+    addr: SocketAddr,
+    pt: TcpProtocolType,
+    ctx: Arc<AppContext>,
+) -> Result<(), std::io::Error> {
     let listener = TcpListener::bind(addr).await?;
     println!("{:?} server listening on {}", pt, addr);
 
@@ -166,7 +198,7 @@ async fn run_tcp_server(addr: SocketAddr, pt: TcpProtocolType, ctx: Arc<AppConte
                                 // let response = HttpResponse {
                                 //     status_code: 200,
                                 //     status_text: "OK",
-       
+
                                 //     headers: vec![
                                 //         ("Content-Type".to_string(), "text/plain".to_string()),
                                 //         ("Connection".to_string(), "keep-alive".to_string()),
@@ -455,6 +487,6 @@ fn handle_404() -> HttpResponse {
 
 #[derive(Clone)]
 pub struct AppContext {
-    pub pg_db: sqlx::Pool<sqlx::Postgres>,
-    
+    // pub pg_db: sqlx::Pool<sqlx::Postgres>,
+    pub fs_db: sqlx::SqlitePool,
 }

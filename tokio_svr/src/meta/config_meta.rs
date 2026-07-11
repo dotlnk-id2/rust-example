@@ -106,6 +106,22 @@ impl Database {
                 self.db_port,
                 self.db_name
             )),
+            "sqlite3" => 
+                match self.db_alias.as_str(){
+                    "fs" => Ok(format!(
+                        // "sqlite::{}:{}",
+                        "{}/{}",
+                        self.db_host,
+                        self.db_name
+                    )),
+                    "memory" =>
+                        Ok(format!(
+                            "file::memory:?cache=shared"
+                    )),
+                    _ => Err("SQLite only supports two types: fs and mem."),
+                }
+            
+            
             _ => Err("DB type not found"),
         }
     }

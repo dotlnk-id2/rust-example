@@ -79,6 +79,16 @@ sqlx_log_enable=true
     db_passwd_type="raw"
     db_passwd="test1test2"
 
+    [database.slave-3]
+    db_alias="memory"
+    db_type="sqlite3"
+    db_host="/opt/sqlite"
+    db_port=0
+    db_name="test.db"
+    db_user=""
+    db_passwd_type="raw"
+    db_passwd=""
+
 
 # Vec<T>
 [[route_mapping]]
