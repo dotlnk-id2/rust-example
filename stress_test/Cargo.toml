@@ -1,0 +1,8 @@
+[package]
+name = "stress_test"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+goose = "^0.18"
+tokio = { version = "1", features = ["macros","rt-multi-thread"] }
