@@ -10,8 +10,9 @@ async fn main() -> Result<(), GooseError> {
         )
         // 设置全局默认值
         .set_default(GooseDefault::Host, "http://localhost:8088")?
-        .set_default(GooseDefault::Users, 100)?
-        .set_default(GooseDefault::RunTime, 30)?
+        .set_default(GooseDefault::Users, 50)?
+        //.set_default(GooseDefault::HatchRate, 10)?
+        .set_default(GooseDefault::RunTime, 100)?
         .execute()
         .await?;
 
