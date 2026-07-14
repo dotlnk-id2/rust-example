@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -27,9 +28,13 @@ use meta::{HttpRequest, HttpResponse};
 use protocol::{HttpCodec, TcpCodec};
 
 const DEFAULT_CONFIG_PATH: &str = "config.toml";
+// const DEFAULT_CONFIG_PATH: PathBuf = PathBuf::from("/opt/repo/rust-example/tokio_svr/config.toml");
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let rt_path = std::env::current_dir()?;
+    println!("test rt_path={:?}",rt_path.to_owned());
+
     let cfg = config::Config::builder()
         .add_source(config::File::with_name(DEFAULT_CONFIG_PATH))
         .build()
@@ -39,8 +44,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // sqlite3 "sqlite::memory:"
     let db_opt = &app_cfg.pool_opt;
-    let db_cfg = app_cfg.database.get("slave-3").unwrap();
-    let db_url = db_cfg.clone().from_db().unwrap();
+    let db_cfg = app_cfg.database.get("slave-3").expect("database cfg slave-3 not found!");
+    let db_url = db_cfg.clone().from_db().expect("database cfg slave-3 not found!");
     println!(
         "{} database connection {}",
         db_cfg.db_type, db_url
@@ -192,25 +197,6 @@ async fn run_tcp_server(
                     while let Some(result) = framed.next().await {
                         match result {
                             Ok(request) => {
-                                // // 業務處理：依據請求內容構建 HTTP 回應報文
-                                // println!("Received HTTP Request: \n{:#?}", request);
-
-                                // let response = HttpResponse {
-                                //     status_code: 200,
-                                //     status_text: "OK",
-
-                                //     headers: vec![
-                                //         ("Content-Type".to_string(), "text/plain".to_string()),
-                                //         ("Connection".to_string(), "keep-alive".to_string()),
-                                //     ],
-                                //     body: b"Hello from Tokio HTTP Asynchronous Server!".to_vec(),
-                                // };
-
-                                // // 🌟 這裡引發的下游網路狀態控制隱患，已先做標記（見文末高亮提醒）
-                                // if let Err(e) = framed.send(response).await {
-                                //     eprintln!("Failed to send HTTP response: {}", e);
-                                //     break;
-                                // }
 
                                 // 1. 將請求丟入分發器，取得計算完畢的 Response 物件
                                 let response = dispatch_http_request(request).await;
@@ -415,7 +401,9 @@ async fn handle_get(request: HttpRequest) -> HttpResponse {
                 b"Missing 'id' parameter".to_vec()
             }
         }
-        _ => b"Hello World".to_vec(),
+        _ => {
+            b"hello get".to_vec()
+        },
     };
 
     HttpResponse {
@@ -429,22 +417,36 @@ async fn handle_get(request: HttpRequest) -> HttpResponse {
 /// 專門處理 POST 請求
 async fn handle_post(request: HttpRequest) -> HttpResponse {
     // 運用您在 Codec 中貼心提取的 content_type 進行嚴謹校驗
-    if let Some(ref c_type) = request.content_type {
-        if c_type.contains("application/json") {
+    // if let Some(ref c_type) = request.content_type {
+    //     if c_type.contains("application/json") {
+    //         // 這裡可以安全地對 request.body 進行 JSON 反序列化 (例如使用 serde_json)
+    //         println!("Received JSON Payload size: {:?}", request.body.clone());
+    //     }
+    // }
+
+    match request.content_type.expect("context_type is null").as_str() {
+        ct if ct.contains("application/json") =>{
             // 這裡可以安全地對 request.body 進行 JSON 反序列化 (例如使用 serde_json)
-            println!("Received JSON Payload size: {} bytes", request.body.len());
+            println!("Received JSON Payload size: {:?}", request.body.clone());
+
+
+            HttpResponse {
+                status_code: 201,
+                status_text: "Created",
+                headers: vec![
+                    ("Content-Type".to_string(), "application/json".to_string()),
+                    ("Connection".to_string(), "keep-alive".to_string()),
+                ],
+                // body: b"{\"message\":\"Data processed successfully\"}".to_vec(),
+                body: request.body,
+            }
+        },
+        _ => {
+            handle_404()
         }
     }
 
-    HttpResponse {
-        status_code: 201,
-        status_text: "Created",
-        headers: vec![
-            ("Content-Type".to_string(), "application/json".to_string()),
-            ("Connection".to_string(), "keep-alive".to_string()),
-        ],
-        body: b"{\"message\":\"Data processed successfully\"}".to_vec(),
-    }
+    
 }
 
 /// 專門處理 OPTIONS 請求（CORS 跨域預檢）
