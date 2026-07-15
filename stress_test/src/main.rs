@@ -1,5 +1,7 @@
 use goose::prelude::*;
 
+use goose_eggs::{validate_and_load_static_assets, Validate};
+
 #[tokio::main]
 async fn main() -> Result<(), GooseError> {
     GooseAttack::initialize()?
@@ -11,8 +13,10 @@ async fn main() -> Result<(), GooseError> {
         // 设置全局默认值
         .set_default(GooseDefault::Host, "http://localhost:8088")?
         .set_default(GooseDefault::Users, 50)?
-        //.set_default(GooseDefault::HatchRate, 10)?
+        .set_default(GooseDefault::HatchRate, "50")?
         .set_default(GooseDefault::RunTime, 100)?
+        // .set_default(GooseDefault::NoPrintMetrics, true)?
+        // .set_default(GooseDefault::ReportFile, "test.html")?
         .execute()
         .await?;
 
@@ -22,6 +26,14 @@ async fn main() -> Result<(), GooseError> {
 async fn api_get_users(user: &mut GooseUser) -> TransactionResult {
     // 带查询参数的 GET 请求
     let _response = user.get("/api/users?page=1&limit=10").await?;
+
+    let validate = &Validate::builder()
+    .status(200)
+    // .text("Gander")
+    .build();
+
+    validate_and_load_static_assets(user, _response, &validate).await?;
+
     Ok(())
 }
 
@@ -32,5 +44,13 @@ async fn api_create_user(user: &mut GooseUser) -> TransactionResult {
         "email": "test@example.com"
     });
     let _response = user.post_json("/api/users", &payload).await?;
+
+    let validate = &Validate::builder()
+    .status(200)
+    // .text("Gander")
+    .build();
+
+    validate_and_load_static_assets(user, _response, &validate).await?;
+    
     Ok(())
 }

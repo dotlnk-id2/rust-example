@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 goose = "^0.18"
+goose-eggs = "0.4"
 tokio = { version = "1", features = ["macros","rt-multi-thread"] }
 
 serde = "1.0.213"
