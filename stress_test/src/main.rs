@@ -6,9 +6,9 @@ use goose_eggs::{validate_and_load_static_assets, Validate};
 async fn main() -> Result<(), GooseError> {
     GooseAttack::initialize()?
         .register_scenario(
-            scenario!("ApiUser")
-                .register_transaction(transaction!(api_get_users))
-                .register_transaction(transaction!(api_create_user)),
+            scenario!("api_op_user")
+                .register_transaction(transaction!(api_get_users).set_weight(2)?.set_name("获得用户 w=2"))
+                .register_transaction(transaction!(api_create_user).set_weight(1)?.set_name("创建用户 w=1")),
         )
         // 设置全局默认值
         .set_default(GooseDefault::Host, "http://localhost:8088")?
@@ -29,7 +29,7 @@ async fn api_get_users(user: &mut GooseUser) -> TransactionResult {
 
     let validate = &Validate::builder()
     .status(200)
-    // .text("Gander")
+    .text("hello get")
     .build();
 
     validate_and_load_static_assets(user, _response, &validate).await?;
@@ -46,11 +46,24 @@ async fn api_create_user(user: &mut GooseUser) -> TransactionResult {
     let _response = user.post_json("/api/users", &payload).await?;
 
     let validate = &Validate::builder()
-    .status(200)
-    // .text("Gander")
+    .status(201)
+    //.text("{\"name\": \"test_user\",\"email\": \"test@example.com\"}")
     .build();
 
     validate_and_load_static_assets(user, _response, &validate).await?;
+    
+    Ok(())
+}
+
+async fn check_availability(user: &mut GooseUser) -> TransactionResult {
+    let mut response = user.get("/api/endpoint").await?;
+    
+    // Stop the test if server returns 503 Service Unavailable
+    if let Ok(response) = response.response {
+        if response.status() == 503 {
+            goose::trigger_killswitch("Server returned 503: Service Unavailable");
+        }
+    }
     
     Ok(())
 }
