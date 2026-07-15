@@ -15,7 +15,7 @@ async fn main() -> Result<(), GooseError> {
         .set_default(GooseDefault::Users, 50)?
         .set_default(GooseDefault::HatchRate, "8")?
         .set_default(GooseDefault::RunTime, 100)?
-        .set_default(GooseDefault::CoordinatedOmissionMitigation,"Minimum")?
+        // .set_default(GooseDefault::CoordinatedOmissionMitigation,"Minimum")?
         .set_default(GooseDefault::ReportFile, "api_op_user-report.html")?
         .execute()
         .await?;
