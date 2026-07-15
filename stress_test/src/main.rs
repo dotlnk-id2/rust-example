@@ -13,10 +13,10 @@ async fn main() -> Result<(), GooseError> {
         // 设置全局默认值
         .set_default(GooseDefault::Host, "http://localhost:8088")?
         .set_default(GooseDefault::Users, 50)?
-        .set_default(GooseDefault::HatchRate, "50")?
+        .set_default(GooseDefault::HatchRate, "8")?
         .set_default(GooseDefault::RunTime, 100)?
-        // .set_default(GooseDefault::NoPrintMetrics, true)?
-        // .set_default(GooseDefault::ReportFile, "test.html")?
+        .set_default(GooseDefault::CoordinatedOmissionMitigation,"Minimum")?
+        .set_default(GooseDefault::ReportFile, "api_op_user-report.html")?
         .execute()
         .await?;
 
