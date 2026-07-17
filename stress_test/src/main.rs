@@ -12,10 +12,9 @@ async fn main() -> Result<(), GooseError> {
         )
         // 设置全局默认值
         .set_default(GooseDefault::Host, "http://localhost:8088")?
-        .set_default(GooseDefault::Users, std::thread::available_parallelism().unwrap().get()*2)?
-        .set_default(GooseDefault::HatchRate, std::thread::available_parallelism().unwrap().get())?
-        .set_default(GooseDefault::RunTime, 300)?
-        .set_default(GooseDefault::NoMetrics, true)?
+        //.set_default(GooseDefault::Users, std::thread::available_parallelism().unwrap().get()*2)?
+        //.set_default(GooseDefault::HatchRate, std::thread::available_parallelism().unwrap().get())?
+        //.set_default(GooseDefault::RunTime, 300)?
         .set_default(GooseDefault::RunningMetrics, 60)?
         .set_default(GooseDefault::CoordinatedOmissionMitigation, GooseCoordinatedOmissionMitigation::Average)?
         .set_default(GooseDefault::ReportFile, "log/default-report.html")?
