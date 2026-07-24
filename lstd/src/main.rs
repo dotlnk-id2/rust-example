@@ -14,6 +14,22 @@ enum Message {
 }
 
 fn main() {
+    use std::cell::Cell;
+
+    let c = Cell::new("asdf");
+    let one = c.get();
+    c.set("qwer");
+    let two = c.get();
+    println!("{},{}", one, two);
+
+    let x = Cell::new(1);
+let y = &x;
+let z = &x;
+x.set(2);
+y.set(3);
+z.set(4);
+println!("{}", x.get());
+
     let msg = Message::ChangeColor(Color::Hsv(0, 160, 255));
 
     match msg {
@@ -110,14 +126,26 @@ fn main() {
     println!(
         "lifetime p = {:?} , r = {:?}",
         &lt,
-        |fv: &str| -> &str { fv }(&lt)
+        |fv: &'static str| -> &'static str { fv }(&lt)
     );
-}
 
-pub fn test<'ta>(a: &'ta str) -> &'ta str {
-    a
-}
+    let mut s = String::new();
 
+    let mut update_string = |str| s.push_str(str);
+    update_string("hello");
+
+    println!("{:?}", s);
+
+    let arr = [1, 2, 3];
+    let mut arr_iter = arr.into_iter();
+
+    assert_eq!(arr_iter.next(), Some(1));
+    assert_eq!(arr_iter.next(), Some(2));
+    assert_eq!(arr_iter.next(), Some(3));
+    assert_eq!(arr_iter.next(), None);
+    assert_eq!(arr_iter.next(), None);
+    assert_eq!(arr_iter.next(), None);
+}
 
 // fn main() {
 //     let lt = "test";
