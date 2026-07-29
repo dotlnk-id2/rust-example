@@ -1,6 +1,26 @@
 use std::{marker::PhantomPinned, pin::Pin};
 
 fn main() {
+
+    let opv: Option<i32> = None;
+
+    let t1 = if let Some(n)= opv{
+        println!("n={:?},opv={:?}",n,opv);
+        1
+    }else{
+        println!("else opv"); 
+        2
+    };
+    println!("t1={:?}",t1);
+
+
+
+
+
+
+
+
+
     use timer_future::Test;
 
     let v1 = "1111";
