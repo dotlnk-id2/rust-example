@@ -4,3 +4,19 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+futures = "^0.3"
+features = "0.10"
+
+tokio = { version = "1", features = [
+    "net",
+    "rt-multi-thread",
+    "macros",
+    "io-util",
+    "sync",
+] }
+
+pingora = { version = "0.8.1", features = ["lb","proxy"] }
+async-trait = "0.1"
+env_logger = "0.11"
+
+anyhow = "1"
