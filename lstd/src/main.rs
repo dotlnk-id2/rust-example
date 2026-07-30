@@ -152,6 +152,9 @@
 
 use std::{slice::from_raw_parts, str::from_utf8_unchecked};
 
+use tracing_appender::rolling::{RollingFileAppender, Rotation};
+use tracing_subscriber::{EnvFilter, FmtSubscriber, filter::Directive, fmt, layer::SubscriberExt, util::SubscriberInitExt};
+
 // 获取字符串的内存地址和长度
 fn get_memory_location() -> (usize, usize) {
   let string = "Hello World!";
@@ -165,7 +168,57 @@ fn get_str_at_location(pointer: usize, length: usize) -> &'static str {
   unsafe { from_utf8_unchecked(from_raw_parts(pointer as *const u8, length)) }
 }
 
+fn init_tracing() -> tracing_appender::non_blocking::WorkerGuard {
+    // 1. 建立按天切割的 File Appender (日誌將儲存於 ./logs/app.log.YYYY-MM-DD)
+    let file_appender = RollingFileAppender::builder()
+        .rotation(Rotation::DAILY) // 支持 HOURLY, DAILY, NEVER
+        .filename_prefix("app")
+        .filename_suffix("log")
+        .build("logs")
+        .expect("無法建立日誌目錄");
+
+    // 2. 包裹為非阻塞 Appender (返回 WorkerGuard 確保程式退出前 Flush 緩衝區)
+    let (non_blocking_appender, guard) = tracing_appender::non_blocking(file_appender);
+
+    // 3. 定義過濾規則
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info"));
+
+    // 4. 定義檔案輸出 Layer (使用 JSON 格式，便於日志收集系统解析)
+    let file_layer = fmt::layer()
+        .json()
+        .with_writer(non_blocking_appender);
+
+    // 5. 定義控制台輸出 Layer (使用易讀的彩色格式)
+    let stdout_layer = fmt::layer()
+        .pretty()
+        .with_writer(std::io::stdout);
+
+    // 6. 組合並註冊全域 Subscriber
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(file_layer)
+        .with(stdout_layer)
+        .init();
+
+    guard // 必須將 Guard 返回並持有一直到 main 結束
+}
+
 fn main() {
+
+  let _g = init_tracing();
+
+    tracing::info!("服務已啟動");
+
+    tracing::info!("OS: {}", std::env::consts::OS);
+    tracing::info!("Arch: {}", std::env::consts::ARCH);
+    tracing::info!("Version: {}", env!("CARGO_PKG_VERSION"));
+    tracing::info!("Concurrent: {}", 4);
+    tracing::info!("Connect timeout: {:?}s",11);
+
+    tracing::error_span!()
+
+
   let (pointer, length) = get_memory_location();
   let message = get_str_at_location(pointer, length);
   println!(
